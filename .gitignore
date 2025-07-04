@@ -1,0 +1,7 @@
+*.csv
+*.png
+*.md
+*.ipynb
+output.txt
+*.joblib
+_outputs_old/
