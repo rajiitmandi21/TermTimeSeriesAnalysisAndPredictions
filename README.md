@@ -1,5 +1,5 @@
 # PriceLabs Assignment
-# Hotel Price Forecasting
+## Hotel Price Forecasting
 
 ## Project Overview
 
