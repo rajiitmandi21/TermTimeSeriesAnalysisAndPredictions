@@ -7,3 +7,5 @@ tabulate
 prophet
 plotly
 xgboost
+joblib
+scikit-learn

@@ -1,3 +1,16 @@
+"""_summary_
+
+_extended_summary_
+
+Raises:
+    ValueError: _description_
+    FileNotFoundError: _description_
+
+Returns:
+    _type_: _description_
+"""
+
+# pylint: disable=missing-function-docstring, missing-class-docstring, too-many-lines
 import os
 import pickle
 import warnings
@@ -12,7 +25,7 @@ import xgboost as xgb
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import KFold, RandomizedSearchCV, cross_val_score
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit, cross_val_score
 from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings("ignore")
@@ -49,6 +62,7 @@ class SimpleFutureForecaster:
         self.X_train = None
         self.y_train = None
         self.training_mode = True
+        self.training_data = {}
         os.makedirs(self.models_dir, exist_ok=True)
 
         # Initialize report file
@@ -57,7 +71,7 @@ class SimpleFutureForecaster:
 
     def _init_report_file(self):
         """Initialize the markdown report file with header."""
-        with open(self.report_file, "w") as f:
+        with open(self.report_file, "w", encoding="utf-8") as f:
             f.write("# Hotel Price Forecasting Report\n\n")
             f.write(
                 f"**Generated on:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
@@ -66,7 +80,7 @@ class SimpleFutureForecaster:
 
     def _write_to_file(self, text):
         """Write text to the markdown report file."""
-        with open(self.report_file, "a") as f:
+        with open(self.report_file, "a", encoding="utf-8") as f:
             f.write(str(text))
 
     def _log_and_write(self, text):
@@ -103,15 +117,33 @@ class SimpleFutureForecaster:
             self._log_and_write(f"- **Threshold:** ±{threshold} standard deviations")
 
         df = df.copy()
-        series = df[self.target_col]
+        series = df[[self.target_col]]
 
-        smooth_baseline = series.rolling(window=window, center=True).mean()
-        diff = series - smooth_baseline
-        rolling_std = diff.rolling(window=window, center=True).std() + 1e-6
-        z_score = diff / rolling_std
+        series["smooth_baseline"] = series.rolling(window=window, center=True).mean()
+        series["diff"] = series[self.target_col] - series["smooth_baseline"]
+        series["rolling_std"] = (
+            series["diff"].rolling(window=window, center=True).std() + 1e-6
+        )
+        series["z_score"] = series["diff"] / series["rolling_std"]
+        series["outlier_zs"] = series["z_score"].abs() > threshold
 
-        outlier_mask = z_score.abs() > threshold
-        outlier_count = outlier_mask.sum()
+        # mean of previous year
+        series[self.target_col + "_py"] = series[self.target_col].shift(365)
+        series[self.target_col + "_ny"] = series[self.target_col].shift(-365)
+
+        series[self.target_col + "_mean"] = (
+            series[self.target_col + "_ny"] + series[self.target_col + "_py"]
+        ) / 2
+
+        # outlier_mask_y = series[self.target_col] - series[self.target_col + "mean"])
+        series["ydfratio"] = (
+            series[self.target_col + "_mean"] - series[self.target_col]
+        ) / series[self.target_col + "_mean"]
+        series["ydfratio_abs"] = series["ydfratio"].apply(lambda x: abs(x))
+        series["outlier_year_val"] = series["ydfratio_abs"] > 1.5
+        series["outlier"] = series["outlier_year_val"] & series["outlier_zs"]
+        # series["outlier_year_val"]
+        outlier_count = series["outlier"].sum()
 
         if self.verbose:
             self._log_and_write(f"- **Total Data Points:** {len(series):,}")
@@ -121,7 +153,9 @@ class SimpleFutureForecaster:
             )
 
         df_clipped = df.copy()
-        df_clipped.loc[outlier_mask, self.target_col] = smooth_baseline[outlier_mask]
+        df_clipped.loc[series["outlier"], self.target_col] = series["smooth_baseline"][
+            series["outlier"]
+        ]
 
         # Create visualization
         fig, ax = plt.subplots(figsize=(14, 6))
@@ -141,8 +175,8 @@ class SimpleFutureForecaster:
             linewidth=1.5,
         )
         ax.scatter(
-            pd.to_datetime(df[outlier_mask][self.date_col]),
-            df[outlier_mask][self.target_col],
+            pd.to_datetime(df[series["outlier"]][self.date_col]),
+            df[series["outlier"]][self.target_col],
             color="red",
             s=20,
             label=f"Outliers ({outlier_count})",
@@ -308,7 +342,7 @@ class SimpleFutureForecaster:
         X_scaled = self.scaler.fit_transform(X)
 
         # Initialize KFold cross validator
-        kfold = KFold(n_splits=cv, shuffle=True, random_state=42)
+        tscv = TimeSeriesSplit(n_splits=cv)
 
         # Store training data for analysis
         self.training_data = {
@@ -336,12 +370,12 @@ class SimpleFutureForecaster:
 
         # Calculate KFold Cross Validation scores BEFORE final training
         lr_cv_scores_rmse = cross_val_score(
-            lr, X_scaled, y, cv=kfold, scoring="neg_mean_squared_error"
+            lr, X_scaled, y, cv=tscv, scoring="neg_mean_squared_error"
         )
         lr_cv_rmse_scores = np.sqrt(-lr_cv_scores_rmse)
-        lr_cv_r2_scores = cross_val_score(lr, X_scaled, y, cv=kfold, scoring="r2")
+        lr_cv_r2_scores = cross_val_score(lr, X_scaled, y, cv=tscv, scoring="r2")
         lr_cv_mae_scores = -cross_val_score(
-            lr, X_scaled, y, cv=kfold, scoring="neg_mean_absolute_error"
+            lr, X_scaled, y, cv=tscv, scoring="neg_mean_absolute_error"
         )
 
         # Now train the final model on all data
@@ -388,7 +422,7 @@ class SimpleFutureForecaster:
             self._log_and_write(f"- **Train MAE:** {lr_mae_train:.4f}")
             self._log_and_write("### Top 5 Feature Coefficients")
             top_coefs = lr_coefs.abs().sort_values(ascending=False).head(5)
-            for feature, coef in top_coefs.items():
+            for feature, _ in top_coefs.items():
                 self._log_and_write(f"  - {feature}: {lr_coefs[feature]:.4f}")
 
         # Random Forest
@@ -402,7 +436,7 @@ class SimpleFutureForecaster:
             RandomForestRegressor(random_state=42),
             rf_params,
             n_iter=n_iter,
-            cv=kfold,
+            cv=tscv,
             scoring="neg_mean_squared_error",
             random_state=42,
         )
@@ -414,14 +448,14 @@ class SimpleFutureForecaster:
 
         # Calculate KFold Cross Validation scores AFTER training
         rf_cv_scores = cross_val_score(
-            self.models["rf"], X_scaled, y, cv=kfold, scoring="neg_mean_squared_error"
+            self.models["rf"], X_scaled, y, cv=tscv, scoring="neg_mean_squared_error"
         )
         rf_cv_rmse_scores = np.sqrt(-rf_cv_scores)
         rf_cv_r2_scores = cross_val_score(
-            self.models["rf"], X_scaled, y, cv=kfold, scoring="r2"
+            self.models["rf"], X_scaled, y, cv=tscv, scoring="r2"
         )
         rf_cv_mae_scores = -cross_val_score(
-            self.models["rf"], X_scaled, y, cv=kfold, scoring="neg_mean_absolute_error"
+            self.models["rf"], X_scaled, y, cv=tscv, scoring="neg_mean_absolute_error"
         )
 
         # Calculate training performance (for comparison only)
@@ -481,7 +515,7 @@ class SimpleFutureForecaster:
             xgb.XGBRegressor(random_state=42),
             xgb_params,
             n_iter=n_iter,
-            cv=kfold,
+            cv=tscv,
             scoring="neg_mean_squared_error",
             random_state=42,
         )
@@ -493,14 +527,14 @@ class SimpleFutureForecaster:
 
         # Calculate KFold Cross Validation scores AFTER training
         xgb_cv_scores = cross_val_score(
-            self.models["xgb"], X_scaled, y, cv=kfold, scoring="neg_mean_squared_error"
+            self.models["xgb"], X_scaled, y, cv=tscv, scoring="neg_mean_squared_error"
         )
         xgb_cv_rmse_scores = np.sqrt(-xgb_cv_scores)
         xgb_cv_r2_scores = cross_val_score(
-            self.models["xgb"], X_scaled, y, cv=kfold, scoring="r2"
+            self.models["xgb"], X_scaled, y, cv=tscv, scoring="r2"
         )
         xgb_cv_mae_scores = -cross_val_score(
-            self.models["xgb"], X_scaled, y, cv=kfold, scoring="neg_mean_absolute_error"
+            self.models["xgb"], X_scaled, y, cv=tscv, scoring="neg_mean_absolute_error"
         )
 
         # Calculate training performance (for comparison only)
@@ -1229,7 +1263,6 @@ class SimpleFutureForecaster:
 
         to_remove = {}
         # kept = set()
-
         for i in range(len(selected)):
             f1 = selected[i]
             if f1 in to_remove:
@@ -1309,7 +1342,6 @@ class SimpleFutureForecaster:
         fig, axes = plt.subplots(2, 3, figsize=(18, 12))
         axes = axes.flatten()
 
-        # Select top 6 features for visualization
         feature_corr = self.training_data["df_features"].corr()
         target_corr = feature_corr[self.target_col].abs().sort_values(ascending=False)
 
@@ -1689,4 +1721,12 @@ def load_and_predict():
 
 if __name__ == "__main__":
     train_main()
+    load_and_predict()
+    load_and_predict()
+    load_and_predict()
+    load_and_predict()
+    load_and_predict()
+    load_and_predict()
+    load_and_predict()
+    load_and_predict()
     load_and_predict()
