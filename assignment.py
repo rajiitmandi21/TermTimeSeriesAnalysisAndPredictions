@@ -228,33 +228,35 @@ class SimpleFutureForecaster:
         # Basic time features
         df["year"] = df.index.year
         df["dayofyear"] = df.index.dayofyear
-
         df["month"] = df.index.month
         df["day_of_month"] = df.index.day
-
         df["week"] = df.index.isocalendar().week
         df["day_of_week"] = df.index.dayofweek
-
         df["days_since_start"] = (df.index - self.start_date).days
 
         # Cyclical features
         df["year_sin"] = np.sin(2 * np.pi * df["year"] / 10)
         df["year_cos"] = np.cos(2 * np.pi * df["year"] / 10)
-
         df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
         df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
-
         df["dayofyear_sin"] = np.sin(2 * np.pi * df["dayofyear"] / 365.25)
         df["dayofyear_cos"] = np.cos(2 * np.pi * df["dayofyear"] / 365.25)
-
         df["week_sin"] = np.sin(2 * np.pi * df["week"] / 52)
         df["week_cos"] = np.cos(2 * np.pi * df["week"] / 52)
-
         df["day_of_week_sin"] = np.sin(2 * np.pi * df["day_of_week"] / 7)
         df["day_of_week_cos"] = np.cos(2 * np.pi * df["day_of_week"] / 7)
-
         df["day_of_month_sin"] = np.sin(2 * np.pi * df["day_of_month"] / 31)
         df["day_of_month_cos"] = np.cos(2 * np.pi * df["day_of_month"] / 31)
+
+        # use lag features if running for short term forecasting
+        # # Lag features
+        # for lag in [1, 7, 30]:
+        #     df[f'lag_{lag}'] = df[self.target_col].shift(lag)
+
+        # # Rolling window features
+        # for window in [7, 30]:
+        #     df[f'rolling_mean_{window}'] = df[self.target_col].shift(1).rolling(window=window).mean()
+        #     df[f'rolling_std_{window}'] = df[self.target_col].shift(1).rolling(window=window).std()
 
         if (
             self.verbose and len(self.feature_names) == 0
@@ -271,6 +273,12 @@ class SimpleFutureForecaster:
             self._log_and_write(
                 "  - Cyclical: month_sin/cos, dayofyear_sin/cos, year_sin/cos"
             )
+            # self._log_and_write(
+            #     "  - Lag Features: lag_1, lag_7, lag_30"
+            # )
+            # self._log_and_write(
+            #     "  - Rolling Window: rolling_mean_7, rolling_std_7, rolling_mean_30, rolling_std_30"
+            # )
             self._log_and_write(
                 f"- **Training Data Date Range:** {df.index.min().date()} to {df.index.max().date()}"
             )
@@ -288,14 +296,10 @@ class SimpleFutureForecaster:
                 self._log_and_write(f"- **Date column:** {self.date_col} found")
             df[self.date_col] = pd.to_datetime(df[self.date_col])
             df.set_index(self.date_col, inplace=True)
-        else:
+        elif df.index.dtype != "datetime64[ns]":
             raise ValueError(f"Date column {self.date_col} not found in dataframe")
 
-        # # index is already datetime then do not interpolate only fill missing values
-        # elif df.index.dtype == "datetime64[ns]":
-        #     pass
-
-        # create a date range for the entire period
+        # Create a date range for the entire period
         date_range = pd.date_range(start=df.index.min(), end=df.index.max(), freq="D")
         # to make sure if there are any missing dates then fill them with NaN
         df = pd.merge(
@@ -1721,6 +1725,8 @@ def load_and_predict():
 
 if __name__ == "__main__":
     train_main()
+    load_and_predict()
+    load_and_predict()
     load_and_predict()
     load_and_predict()
     load_and_predict()
